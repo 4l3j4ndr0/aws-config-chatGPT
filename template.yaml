@@ -1,0 +1,330 @@
+
+AWSTemplateFormatVersion: 2010-09-09
+Description: chatGPT integrate with AWS Config
+Transform: AWS::Serverless-2016-10-31
+
+Parameters:
+  OpenAiApiKey:
+    Type: String
+  SlackBotToken:
+    Type: String
+  SlackChannel:
+    Type: String
+    Default: "aws-config-chatgpt"
+
+Resources:
+  # SNS
+  ConfigSnsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: Topic to AWS Config
+      TopicName: aws-config-topic
+  # AWS Config
+  AwsConfigOutputBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'config-output-bucket-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+  AwsConfigRecorder:
+    Type: AWS::Config::ConfigurationRecorder
+    DependsOn: 
+      - AwsConfigRole
+    Properties:
+      Name: aws-config-recorder
+      RecordingGroup:
+        AllSupported: false
+        IncludeGlobalResourceTypes: false
+        ResourceTypes: 
+          - AWS::EC2::SecurityGroup
+          - AWS::S3::Bucket
+      RoleARN: !GetAtt AwsConfigRole.Arn
+  ConfigDeliveryChannel:
+    Type: AWS::Config::DeliveryChannel
+    Properties:
+      Name: config-delivery-channel
+      S3BucketName: !Ref AwsConfigOutputBucket
+      SnsTopicARN: !GetAtt ConfigSnsTopic.TopicArn
+      ConfigSnapshotDeliveryProperties:
+        DeliveryFrequency: One_Hour
+  AwsConfigRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: AwsConfigRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: 
+              - config.amazonaws.com
+          Action: 
+            - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: AllowS3PutActions
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: 
+                  - 's3:PutObject'
+                  - 's3:PutObjectAcl'
+                Resource: 
+                  - "arn:aws:s3:::*/*"
+        - PolicyName: AllowS3GetActions
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: 
+                  - 's3:GetBucketAcl'
+                Resource: 
+                  - !GetAtt AwsConfigOutputBucket.Arn
+        - PolicyName: AllowKmsActions
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: 
+                  - 'kms:Decrypt'
+                  - 'kms:GenerateDataKey'
+                Resource: 
+                  - '*'
+        - PolicyName: AllowSnsActions
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: 
+                  - 'sns:Publish'
+                Resource: 
+                  - !GetAtt ConfigSnsTopic.TopicArn
+      ManagedPolicyArns: 
+        - "arn:aws:iam::aws:policy/service-role/AWS_ConfigRole"
+  # AWS Config Rules
+  SecurityGroupsRule:
+    Type: AWS::Config::ConfigRule
+    DependsOn: 
+      - AwsConfigRecorder
+    Properties:
+      ConfigRuleName: DetectInsecureChangesInSecurityGroups
+      Description: Checks if the incoming SSH traffic for the security groups is accessible. The rule is COMPLIANT when IP addresses of the incoming SSH traffic in the security groups are restricted (CIDR other than 0.0.0.0/0). This rule applies only to IPv4.
+      Source:
+        Owner: AWS
+        SourceIdentifier: INCOMING_SSH_DISABLED
+      Scope:
+        ComplianceResourceTypes:
+        - AWS::EC2::SecurityGroup
+  S3BucketsRule:
+    Type: AWS::Config::ConfigRule
+    DependsOn: 
+      - AwsConfigRecorder
+    Properties:
+      ConfigRuleName: DetectOpenS3Buckets
+      Description: Detects when S3 buckets are open to the public.
+      Source:
+        Owner: AWS
+        SourceIdentifier: S3_BUCKET_LEVEL_PUBLIC_ACCESS_PROHIBITED
+      Scope:
+        ComplianceResourceTypes:
+        - AWS::S3::Bucket
+  # Roles
+  ConfigHandlerExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: ConfigHandlerExecutionRole
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: AllowCloudwatchActions
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: 
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: '*'
+        - PolicyName: AllowParameterStoreActions
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: 'ssm:GetParameter'
+                Resource: '*'
+        - PolicyName: AllowCloudtrailActions
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: 
+                  - 'cloudtrail:LookupEvents'
+                Resource: '*'
+  WebhookExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: WebhookExecutionRole
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: AllowCloudwatchActions
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: 
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: '*'
+        - PolicyName: AllowSqsActions
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: 
+                  - sqs:SendMessage
+                  - sqs:GetQueueUrl
+                Resource: '*'
+  AdminExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: AdminExecutionRole
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: AllowAll
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: 
+                  - '*'
+                Resource: '*'
+  # SQS
+  SqsAwsCommand:
+    Type: "AWS::SQS::Queue"
+    Properties:
+      QueueName: aws-cli-command-sqs
+  # Api Gateway
+  Api:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: prod
+
+  LayerAwsCli:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: AwsCliLayer
+      ContentUri: ./layers
+      CompatibleRuntimes:
+        - python3.8
+      
+  # Lambdas
+  WebhookSlackLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: webhook-slack-function
+      Description: Lambda to handler the webhook message from Slack channel.
+      Runtime: python3.8
+      Architectures:
+        - x86_64
+      CodeUri: ./webhook-slack-function/
+      Handler: app.lambda_handler
+      Environment:
+        Variables:
+          SLACK_BOT_TOKEN: !Sub ${SlackBotToken}
+          SLACK_CHANNEL: !Sub ${SlackChannel}
+          QUEUE_URL: !GetAtt SqsAwsCommand.QueueUrl
+      Events:
+        ApiGatewayEvent:
+          Type: Api
+          Properties:
+            Path: /webhook
+            Method: post
+            RestApiId: !Ref Api
+      MemorySize: 128
+      Timeout: 60
+      Role: !GetAtt WebhookExecutionRole.Arn
+  AwsApplyCommandLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: aws-apply-command-function
+      Description: Lambda to apply the AWS CLI command.
+      Runtime: python3.8
+      Architectures:
+        - x86_64
+      CodeUri: ./aws-apply-command-function/
+      Handler: app.lambda_handler
+      Environment:
+        Variables:
+          SLACK_BOT_TOKEN: !Sub ${SlackBotToken}
+          SLACK_CHANNEL: !Sub ${SlackChannel}
+      Events:
+        MyQueueEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt SqsAwsCommand.Arn
+            BatchSize: 10
+      MemorySize: 128
+      Timeout: 30
+      Role: !GetAtt AdminExecutionRole.Arn
+      Layers:
+        - !Ref LayerAwsCli
+        - 'arn:aws:lambda:us-east-1:770693421928:layer:Klayers-p38-requests:10'
+  
+  ConfigHandlerLambda:
+    Type: AWS::Serverless::Function
+    DependsOn: 
+      - WebhookSlackLambda
+    Properties:
+      FunctionName: config-handler-function
+      Description: Lambda to handler the AWS Config.
+      Runtime: nodejs16.x
+      Architectures:
+        - x86_64
+      CodeUri: ./config-handler-function/
+      Handler: index.handler
+      Environment:
+        Variables:
+          OPENAI_API_KEY: !Sub ${OpenAiApiKey}
+          SLACK_BOT_TOKEN: !Sub ${SlackBotToken}
+          SLACK_CHANNEL: !Sub ${SlackChannel}
+          WEBHOOK_SLACK: !Sub 'https://${Api}.execute-api.${AWS::Region}.amazonaws.com/prod'
+      Events:
+        SnsEvent:
+          Type: SNS
+          Properties:
+            Topic: !Ref ConfigSnsTopic
+      MemorySize: 256
+      Timeout: 60
+      Role: !GetAtt ConfigHandlerExecutionRole.Arn
+  
+Outputs:
+  ApiUrl:
+    Description: URL of the API Gateway
+    Value: !Sub "https://${Api}.execute-api.${AWS::Region}.amazonaws.com/prod"
+    Export:
+      Name: ApiUrl
+  
+  
