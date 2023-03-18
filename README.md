@@ -7,7 +7,7 @@
 1. Clone this repository in your local machine:
 
 ```javascript
-glit clone https://github.com/4l3j4ndr0/aws-config-chatGPT.git
+git clone https://github.com/4l3j4ndr0/aws-config-chatGPT.git
 ```
 
 2. Deploy the cloudformation stack.
