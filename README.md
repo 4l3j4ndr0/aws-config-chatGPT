@@ -20,10 +20,9 @@ sam deploy \
 --template-file template.yaml \
 --stack-name aws-config-stack \
 --capabilities CAPABILITY_NAMED_IAM \
---parameter-overrides OpenAiApiKey=<your_api_key_open_ai>
-SlackBotToken=<your_oauth_token_slack> SlackChannel=<your_slack_channel> \
 --resolve-s3 \
---profile <your_aws_credentials_profile>
+--profile <your_aws_credentials_profile> \
+--parameter-overrides OpenAiApiKey=<your_api_key_open_ai> SlackBotToken=<your_oauth_token_slack> SlackChannel=<your_slack_channel>
 ```
 
 - Using AWS CLI:
@@ -33,9 +32,15 @@ aws cloudformation deploy \
 --template-file template.yaml \
 --stack-name aws-config-stack \
 --capabilities CAPABILITY_NAMED_IAM \
---parameter-overrides OpenAiApiKey=<your_api_key_open_ai> SlackBotToken=<your_oauth_token_slack> SlackChannel=<your_slack_channel> \
 --resolve-s3 \
---profile <your_aws_credentials_profile>
+--profile <your_aws_credentials_profile> \
+--parameter-overrides OpenAiApiKey=<your_api_key_open_ai> SlackBotToken=<your_oauth_token_slack> SlackChannel=<your_slack_channel>
+```
+
+- Deploy Guided:
+
+```javascript
+sam deploy --guided --profile <your_aws_credentials_profile>
 ```
 
 Once the stack is deployed, execute the following AWS CLI command to obtain the API URL of the API Gateway:
